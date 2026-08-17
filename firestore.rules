@@ -1,0 +1,127 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function adventurePath(adventureId) {
+      return /databases/$(database)/documents/adventures/$(adventureId);
+    }
+
+    function ownsAdventure(adventureId) {
+      return signedIn()
+        && exists(adventurePath(adventureId))
+        && get(adventurePath(adventureId)).data.ownerId == request.auth.uid;
+    }
+
+    function ownsActiveAdventure(adventureId) {
+      return ownsAdventure(adventureId)
+        && get(adventurePath(adventureId)).data.deleting == false;
+    }
+
+    function willOwnAdventure(adventureId) {
+      return signedIn()
+        && getAfter(adventurePath(adventureId)).data.ownerId == request.auth.uid
+        && getAfter(adventurePath(adventureId)).data.deleting == false;
+    }
+
+    function validAdventure() {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+          'ownerId', 'title', 'genre', 'tone', 'protagonistName', 'artStyle',
+          'model', 'preview', 'sceneCount', 'historyCount', 'coverImageUrl',
+          'latestSceneId', 'deleting', 'schemaVersion', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'title', 'genre', 'tone', 'protagonistName', 'artStyle',
+          'model', 'preview', 'sceneCount', 'historyCount', 'coverImageUrl',
+          'latestSceneId', 'deleting', 'schemaVersion', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 120
+        && data.genre is string && data.genre.size() <= 120
+        && data.tone is string && data.tone.size() <= 500
+        && data.protagonistName is string && data.protagonistName.size() <= 120
+        && data.artStyle is string && data.artStyle.size() <= 500
+        && data.model is string && data.model.size() <= 120
+        && data.preview is string && data.preview.size() <= 500
+        && data.sceneCount is int && data.sceneCount >= 0
+        && data.historyCount is int && data.historyCount >= 0
+        && (data.latestSceneId == null
+          || (data.latestSceneId is string && data.latestSceneId.size() <= 200))
+        && data.deleting is bool
+        && data.schemaVersion is int
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && (data.coverImageUrl == null
+          || (data.coverImageUrl is string && data.coverImageUrl.matches('^https://.*')));
+    }
+
+    function validScene(sceneId) {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+          'id', 'index', 'narration', 'choices', 'imagePrompt', 'imageUrl',
+          'historyEntries', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'index', 'narration', 'choices', 'imagePrompt', 'imageUrl',
+          'historyEntries', 'createdAt', 'updatedAt'
+        ])
+        && data.id == sceneId
+        && data.index is int && data.index >= 0
+        && data.narration is string && data.narration.size() <= 100000
+        && data.choices is list && data.choices.size() <= 20
+        && data.imagePrompt is string && data.imagePrompt.size() <= 10000
+        && data.historyEntries is list && data.historyEntries.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && (data.imageUrl == null
+          || (data.imageUrl is string && data.imageUrl.matches('^https://.*')));
+    }
+
+    match /adventures/{adventureId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && validAdventure();
+      allow read, delete: if ownsAdventure(adventureId);
+      allow update: if ownsAdventure(adventureId)
+        && resource.data.deleting == false
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && validAdventure();
+
+      match /state/{stateId} {
+        allow read: if stateId == 'current' && ownsAdventure(adventureId);
+        allow create: if stateId == 'current' && willOwnAdventure(adventureId);
+        allow update: if stateId == 'current' && ownsActiveAdventure(adventureId);
+        allow delete: if stateId == 'current' && ownsAdventure(adventureId);
+      }
+
+      match /scenes/{sceneId} {
+        allow read: if ownsAdventure(adventureId);
+        allow create: if (ownsActiveAdventure(adventureId) || willOwnAdventure(adventureId))
+          && validScene(sceneId);
+        allow update: if ownsActiveAdventure(adventureId)
+          && request.resource.data.id == resource.data.id
+          && request.resource.data.index == resource.data.index
+          && request.resource.data.createdAt == resource.data.createdAt
+          && validScene(sceneId);
+        allow delete: if ownsAdventure(adventureId);
+      }
+
+      match /events/{eventId} {
+        // Fate outcomes are written by trusted server functions. Players may read
+        // them, and client-side save deletion may remove them, but the browser
+        // cannot forge or rewrite an outcome.
+        allow read, delete: if ownsAdventure(adventureId);
+        allow create, update: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

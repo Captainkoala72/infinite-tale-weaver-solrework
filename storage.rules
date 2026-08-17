@@ -1,0 +1,43 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function ownsPath(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    function adventurePath(adventureId) {
+      return /databases/(default)/documents/adventures/$(adventureId);
+    }
+
+    function ownsActiveAdventure(userId, adventureId) {
+      return ownsPath(userId)
+        && firestore.exists(adventurePath(adventureId))
+        && firestore.get(adventurePath(adventureId)).data.ownerId == userId
+        && firestore.get(adventurePath(adventureId)).data.deleting == false;
+    }
+
+    function sceneExists(adventureId, sceneId) {
+      return firestore.exists(
+        /databases/(default)/documents/adventures/$(adventureId)/scenes/$(sceneId)
+      );
+    }
+
+    function validMedia() {
+      return request.resource.size < 50 * 1024 * 1024
+        && request.resource.contentType.matches('(image/(avif|gif|jpeg|png|webp)|video/(mp4|quicktime|webm))');
+    }
+
+    match /users/{userId}/adventures/{adventureId}/scenes/{sceneId} {
+      allow read: if ownsPath(userId);
+      allow create, update: if ownsActiveAdventure(userId, adventureId)
+        && sceneExists(adventureId, sceneId)
+        && validMedia();
+      allow delete: if ownsPath(userId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
